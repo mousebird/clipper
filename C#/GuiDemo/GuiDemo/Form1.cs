@@ -1,4 +1,6 @@
-﻿using System;
+﻿//#define UsePolyTree
+
+using System;
 using System.Diagnostics;
 using System.Text;
 using System.Collections.Generic;
@@ -12,13 +14,10 @@ using System.Windows.Forms;
 using System.Globalization;
 using ClipperLib;
 
-
 namespace WindowsFormsApplication1
 {
-
     using Polygon = List<IntPoint>;
     using Polygons = List<List<IntPoint>>;
-    using ExPolygons = List<ExPolygon>;
 
     public partial class Form1 : Form
     {
@@ -30,15 +29,15 @@ namespace WindowsFormsApplication1
         private Polygons subjects;
         private Polygons clips;
         private Polygons solution;
-        private ExPolygons exSolution;
+        private PolyTree solutionTree;
 
         //Here we are scaling all coordinates up by 100 when they're passed to Clipper 
         //via Polygon (or Polygons) objects because Clipper no longer accepts floating  
         //point values. Likewise when Clipper returns a solution in a Polygons object, 
         //we need to scale down these returned values by the same amount before displaying.
-        private int scale = 100; //or 1 or 10 or 10000 etc for lesser or greater precision.
+        private float scale = 100; //or 1 or 10 or 10000 etc for lesser or greater precision.
 
-        //---------------------------------------------------------------------
+        //------------------------------------------------------------------------------
         //---------------------------------------------------------------------
 
         //a very simple class that builds an SVG file with any number of 
@@ -211,9 +210,9 @@ namespace WindowsFormsApplication1
         //------------------------------------------------------------------------------
         //------------------------------------------------------------------------------
 
-        static private System.Drawing.PointF[] PolygonToPointFArray(Polygon pg, int scale)
+        static private PointF[] PolygonToPointFArray(Polygon pg, float scale)
         {
-            System.Drawing.PointF[] result = new System.Drawing.PointF[pg.Count];
+            PointF[] result = new PointF[pg.Count];
             for (int i = 0; i < pg.Count; ++i)
             {
                 result[i].X = (float)pg[i].X / scale;
@@ -221,6 +220,16 @@ namespace WindowsFormsApplication1
             }
             return result;
         }
+        //---------------------------------------------------------------------
+
+        //static public Polygon IntArrayToPolygon(int[] ints)
+        //{
+        //    int cnt = ints.Length / 2;
+        //    Polygon result = new Polygon(cnt);
+        //    for (int i = 0; i < cnt; i++)
+        //        result.Add(new IntPoint(ints[i * 2], ints[i * 2 + 1]));
+        //    return result;
+        //}
         //---------------------------------------------------------------------
 
         public Form1()
@@ -277,7 +286,7 @@ namespace WindowsFormsApplication1
             const int ellipse_size = 100, margin = 10;
             for (int i = 0; i < count; ++i)
             {
-                int w = pictureBox1.ClientRectangle.Width - ellipse_size - margin *2;
+                int w = pictureBox1.ClientRectangle.Width - ellipse_size - margin * 2;
                 int h = pictureBox1.ClientRectangle.Height - ellipse_size - margin * 2 - statusStrip1.Height;
 
                 pt.X = rand.Next(w) + margin;
@@ -298,8 +307,8 @@ namespace WindowsFormsApplication1
         {
             int Q = 10;
             IntPoint newPt = new IntPoint();
-            newPt.X = (rand.Next(r / Q) * Q + l + 10) * scale;
-            newPt.Y = (rand.Next(b / Q) * Q + t + 10) * scale;
+            newPt.X = (Int64)Math.Round((rand.Next(r / Q) * Q + l + 10) * scale);
+            newPt.Y = (Int64)Math.Round((rand.Next(b / Q) * Q + t + 10) * scale);
             return newPt;
         }
         //---------------------------------------------------------------------
@@ -447,16 +456,23 @@ namespace WindowsFormsApplication1
 
             //do the clipping ...
             if ((clips.Count > 0 || subjects.Count > 0) && !rbNone.Checked)
-            {                
+            {
                 Polygons solution2 = new Polygons();
                 Clipper c = new Clipper();
-                c.AddPolygons(subjects, PolyType.ptSubject);
-                c.AddPolygons(clips, PolyType.ptClip);
-                exSolution.Clear();
+                c.AddPaths(subjects, PolyType.ptSubject, true);
+                c.AddPaths(clips, PolyType.ptClip, true);
                 solution.Clear();
+#if UsePolyTree
+                bool succeeded = c.Execute(GetClipType(), solutionTree, GetPolyFillType(), GetPolyFillType());
+                //nb: we aren't doing anything useful here with solutionTree except to show
+                //that it works. Convert PolyTree back to Polygons structure ...
+                Clipper.PolyTreeToPolygons(solutionTree, solution);
+#else
                 bool succeeded = c.Execute(GetClipType(), solution, GetPolyFillType(), GetPolyFillType());
+#endif
                 if (succeeded)
                 {
+                    //SaveToFile("solution", solution);
                     myBrush.Color = Color.Black;
                     path.Reset();
 
@@ -467,10 +483,16 @@ namespace WindowsFormsApplication1
                     path.FillMode = FillMode.Winding;
 
                     //or for something fancy ...
+
                     if (nudOffset.Value != 0)
-                        solution2 = Clipper.OffsetPolygons(solution, (double)nudOffset.Value * scale, JoinType.jtMiter);
+                    {
+                      ClipperOffset co = new ClipperOffset();
+                      co.AddPaths(solution, JoinType.jtRound, EndType.etClosedPolygon);
+                      co.Execute(ref solution2, (double)nudOffset.Value * scale);
+                    }
                     else
                         solution2 = new Polygons(solution);
+
                     foreach (Polygon pg in solution2)
                     {
                         PointF[] pts = PolygonToPointFArray(pg, scale);
@@ -489,14 +511,14 @@ namespace WindowsFormsApplication1
                     SolidBrush b = new SolidBrush(Color.Navy);
                     double subj_area = 0, clip_area = 0, int_area = 0, union_area = 0;
                     c.Clear();
-                    c.AddPolygons(subjects, PolyType.ptSubject);
+                    c.AddPaths(subjects, PolyType.ptSubject, true);
                     c.Execute(ClipType.ctUnion, solution2, GetPolyFillType(), GetPolyFillType());
                     foreach (Polygon pg in solution2) subj_area += Clipper.Area(pg);
                     c.Clear();
-                    c.AddPolygons(clips, PolyType.ptClip);
+                    c.AddPaths(clips, PolyType.ptClip, true);
                     c.Execute(ClipType.ctUnion, solution2, GetPolyFillType(), GetPolyFillType());
                     foreach (Polygon pg in solution2) clip_area += Clipper.Area(pg);
-                    c.AddPolygons(subjects, PolyType.ptSubject);
+                    c.AddPaths(subjects, PolyType.ptSubject, true);
                     c.Execute(ClipType.ctIntersection, solution2, GetPolyFillType(), GetPolyFillType());
                     foreach (Polygon pg in solution2) int_area += Clipper.Area(pg);
                     c.Execute(ClipType.ctUnion, solution2, GetPolyFillType(), GetPolyFillType());
@@ -508,7 +530,7 @@ namespace WindowsFormsApplication1
                     StringFormat rtStringFormat = new StringFormat();
                     rtStringFormat.Alignment = StringAlignment.Far;
                     rtStringFormat.LineAlignment = StringAlignment.Near;
-                    Rectangle rec = new Rectangle(pictureBox1.ClientSize.Width - 108, 
+                    Rectangle rec = new Rectangle(pictureBox1.ClientSize.Width - 108,
                         pictureBox1.ClientSize.Height - 116, 104, 106);
                     newgraphic.FillRectangle(new SolidBrush(Color.FromArgb(196, Color.WhiteSmoke)), rec);
                     newgraphic.DrawRectangle(myPen, rec);
@@ -535,10 +557,19 @@ namespace WindowsFormsApplication1
                     newgraphic.DrawString((union_area / 100000).ToString("0,0"), f, b, rec, rtStringFormat);
                     rec.Offset(new Point(0, 10));
                     newgraphic.DrawString("---------", f, b, rec, rtStringFormat);
+
+                    lftStringFormat.Dispose();
+                    rtStringFormat.Dispose();
+                    f.Dispose();
+                    b.Dispose();
                 } //end if succeeded
             } //end if something to clip
 
             pictureBox1.Image = mybitmap;
+            
+            myBrush.Dispose();
+            myPen.Dispose();
+            path.Dispose();
             newgraphic.Dispose();
             Cursor.Current = Cursors.Default;
         }
@@ -554,7 +585,7 @@ namespace WindowsFormsApplication1
             subjects = new Polygons(); 
             clips = new Polygons();
             solution = new Polygons();
-            exSolution = new ExPolygons();
+            solutionTree = new PolyTree();
 
             toolStripStatusLabel1.Text =
                 "Tip: Use the mouse-wheel (or +,-,0) to adjust the offset of the solution polygons.";
